@@ -5,14 +5,14 @@ const express = require('express');
 const { v4: uuidv4 } = require('uuid');
 
 const DATA_FILE = './data.json';
-const BOT_TOKEN = process.env.BOT_TOKEN;
+const TOKEN = process.env.TOKEN;
 const LOG_CHANNEL_ID = process.env.LOG_CHANNEL_ID;
 const IGNORED_ROLES = (process.env.IGNORED_ROLES || '').split(',').map(s => s.trim()).filter(Boolean);
 const GUILD_ID = process.env.GUILD_ID || null;
 const PORT = process.env.PORT || 3000;
 
-if (!BOT_TOKEN) {
-    console.error('Please set BOT_TOKEN in .env');
+if (!TOKEN) {
+    console.error('Please set TOKEN in .env');
     process.exit(1);
 }
 
@@ -287,7 +287,7 @@ const commands = [
 
 // --- Register commands
 async function registerCommands() {
-    const rest = new REST({ version: '10' }).setToken(BOT_TOKEN);
+    const rest = new REST({ version: '10' }).setToken(TOKEN);
     try {
         if (GUILD_ID) {
             await rest.put(Routes.applicationGuildCommands(client.application?.id || process.env.CLIENT_ID || '0', GUILD_ID), { body: commands.map(c => c.toJSON()) });
@@ -553,7 +553,7 @@ client.on('interactionCreate', async interaction => {
 });
 
 // --- Login
-client.login(BOT_TOKEN);
+client.login(TOKEN);
 
 // --- Keep-alive server
 const app = express();
