@@ -442,33 +442,34 @@ client.on('interactionCreate', async interaction => {
     }
 
     // --- Check User
-    else if (commandName === 'checkuser') {
-        const target = interaction.options.getUser('user', true);
-        const viols = getViolations(interaction.guild.id, target.id);
-        if (viols.length === 0) {
-            const embed = new EmbedBuilder()
-                .setTitle('User Violations')
-                .setDescription(`<@${target.id}> has no violations.`)
-                .setColor('Green')
-                .setTimestamp();
-            return await interaction.editReply({ embeds: [embed] });
-        }
-
+else if (commandName === 'checkuser') {
+    const target = interaction.options.getUser('user', true);
+    const viols = getViolations(interaction.guild.id, target.id);
+    if (viols.length === 0) {
         const embed = new EmbedBuilder()
-            .setTitle(`Violations for ${target.tag}`)
-            .setDescription(`Found **${viols.length}** violations.`)
-            .setColor('Orange')
+            .setTitle('User Violations')
+            .setDescription(`<@${target.id}> has no violations.`)
+            .setColor('Green')
             .setTimestamp();
-
-        viols.slice(0, 10).forEach((v, index) => {
-            embed.addFields({
-                name: `Violation ${index + 1}: ${v.type} — \`${v.id.substring(0, 8)}\``,
-                value: `**Reason:** ${v.reason}\n**Moderator:** <@${v.moderatorId}>\n**Channel:** <#${v.channelId}>\n**Time:** <t:${Math.floor(new Date(v.timestamp).getTime() / 1000)}:F>`
-            });
-        });
-
-        await interaction.editReply({ embeds: [embed] });
+        return await interaction.editReply({ embeds: [embed] });
     }
+
+    const embed = new EmbedBuilder()
+        .setTitle(`Violations for ${target.tag}`)
+        .setDescription(`Found **${viols.length}** violations.`)
+        .setColor('Orange')
+        .setTimestamp();
+
+    viols.slice(0, 10).forEach((v, index) => {
+        embed.addFields({
+            name: `Violation ${index + 1}: ${v.type} — \`${v.id.substring(0, 8)}\``,
+            value: `**Reason:** ${v.reason}\n**Time:** <t:${Math.floor(new Date(v.timestamp).getTime() / 1000)}:F>`
+        });
+    });
+
+    await interaction.editReply({ embeds: [embed] });
+}
+
 
     // --- Whitelist
     else if (commandName === 'whitelist') {
