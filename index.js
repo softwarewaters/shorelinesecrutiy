@@ -6,6 +6,7 @@ const { v4: uuidv4 } = require('uuid');
 
 const DATA_FILE = './data.json';
 const TOKEN = process.env.TOKEN;
+const CLIENT_ID = process.env.CLIENT_ID; // Added for explicit command registration
 const LOG_CHANNEL_ID = process.env.LOG_CHANNEL_ID;
 const IGNORED_ROLES = (process.env.IGNORED_ROLES || '').split(',').map(s => s.trim()).filter(Boolean);
 const GUILD_ID = process.env.GUILD_ID || null;
@@ -18,6 +19,10 @@ const BAN_APPEAL_URL = 'https://shorelineinteractive.netlify.app/banappeal';
 if (!TOKEN) {
     console.error('Please set TOKEN in .env');
     process.exit(1);
+}
+// NOTE: CLIENT_ID is highly recommended for REST registration, though the ready event can fetch it.
+if (!CLIENT_ID) {
+    console.warn('CLIENT_ID is not set in .env. Command registration may fail if client.application is not ready.');
 }
 
 // --- Load / Save data
@@ -344,12 +349,21 @@ const commands = [
 // --- Register commands
 async function registerCommands() {
     const rest = new REST({ version: '10' }).setToken(TOKEN);
+    // Use client.application.id if available, otherwise fall back to the env variable.
+    // The client.on('ready') event should ensure client.application is not null here.
+    const applicationId = client.application?.id || CLIENT_ID; 
+
+    if (!applicationId) {
+        console.error('Failed to get CLIENT_ID. Cannot register commands.');
+        return;
+    }
+
     try {
         if (GUILD_ID) {
-            await rest.put(Routes.applicationGuildCommands(client.application?.id || process.env.CLIENT_ID || '0', GUILD_ID), { body: commands.map(c => c.toJSON()) });
+            await rest.put(Routes.applicationGuildCommands(applicationId, GUILD_ID), { body: commands.map(c => c.toJSON()) });
             console.log('Registered guild commands');
         } else {
-            await rest.put(Routes.applicationCommands(client.application?.id || process.env.CLIENT_ID || '0'), { body: commands.map(c => c.toJSON()) });
+            await rest.put(Routes.applicationCommands(applicationId), { body: commands.map(c => c.toJSON()) });
             console.log('Registered global commands');
         }
     } catch (e) {
@@ -364,6 +378,7 @@ client.on('ready', async () => {
         activities: [{ name: 'with my ban hammer', type: 0 }],
         status: 'online'
     });
+    // Command registration is called here to ensure client.application is available
     await registerCommands();
 });
 
@@ -374,7 +389,8 @@ client.on('interactionCreate', async interaction => {
 
     // Acknowledge the interaction PUBLICLY to prevent the "Unknown interaction" error
     try {
-        await interaction.deferReply({ ephemeral: false });
+        // Use ephemeral: true for commands that only the user needs to see (like pings or successful actions)
+        await interaction.deferReply({ ephemeral: ['ping', 'whitelist', 'checkuser', 'removeviolation'].includes(commandName) });
     } catch (e) {
         console.error(`Failed to defer interaction for command ${commandName}:`, e);
         return;
@@ -654,7 +670,7 @@ client.on('interactionCreate', async interaction => {
                     { name: 'Role Added', value: `${roleOpt.name} (\`${roleOpt.id}\`)` }
                 ];
             } else {
-                 embed = new EmbedBuilder().setDescription('Please provide a user or a role to add.').setColor('Red');
+                embed = new EmbedBuilder().setDescription('Please provide a user or a role to add.').setColor('Red');
             }
         } else if (sub === 'remove') {
             if (userOpt) {
@@ -691,7 +707,7 @@ client.on('interactionCreate', async interaction => {
         if (embed) {
             await interaction.editReply({ embeds: [embed] });
         } else {
-             await interaction.editReply({ embeds: [new EmbedBuilder().setDescription('Invalid whitelist action.').setColor('Red')] });
+            await interaction.editReply({ embeds: [new EmbedBuilder().setDescription('Invalid whitelist action.').setColor('Red')] });
         }
 
         if (logTitle) {
