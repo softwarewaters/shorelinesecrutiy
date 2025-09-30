@@ -94,7 +94,7 @@ async function logEmbed(guild, actionTitle, actionDescription, fields, color) {
     }
 }
 
-// --- Appeal DM Function (New Function)
+// --- Appeal DM Function
 async function sendAppealDM(user, action, reason, isBan = false) {
     try {
         const embed = new EmbedBuilder()
@@ -193,7 +193,7 @@ client.on('messageCreate', async (message) => {
 
             await message.channel.send({ embeds: [embed] });
 
-            // UPDATED: Log function call with more details
+            // Log function call with more details
             const logFields = [
                 { name: 'User', value: `<@${message.author.id}>`, inline: true },
                 { name: 'Channel', value: `${message.channel}`, inline: true },
@@ -203,34 +203,7 @@ client.on('messageCreate', async (message) => {
             ];
             await logEmbed(message.guild, 'Hate Speech Detected', `A user posted a banned word.`, logFields, 'Red');
 
-            const userViolations = getViolations(message.guild.id, message.author.id);
-            if (userViolations.length >= 3) {
-                try {
-                    const memberToTimeout = await message.guild.members.fetch(message.author.id);
-                    await memberToTimeout.timeout(30 * 60 * 1000, '3 security violations');
-                    const timeoutEmbed = new EmbedBuilder()
-                        .setTitle('User Timed Out')
-                        .setDescription(`<@${message.author.id}> was timed out for 30 minutes due to reaching 3 violations.`)
-                        .addFields(
-                            { name: 'User', value: `<@${message.author.id}>` },
-                            { name: 'Channel', value: `${message.channel}` },
-                            { name: 'Moderator', value: `<@${client.user.id}>` },
-                            { name: 'Time', value: new Date().toLocaleString() }
-                        )
-                        .setColor('Orange')
-                        .setTimestamp();
-                    await message.channel.send({ embeds: [timeoutEmbed] });
-                    // UPDATED: Log function call
-                    const timeoutLogFields = [
-                        { name: 'User', value: `<@${message.author.id}>`, inline: true },
-                        { name: 'Moderator', value: `<@${client.user.id}>`, inline: true },
-                        { name: 'Reason', value: 'Reached 3 violations' }
-                    ];
-                    await logEmbed(message.guild, 'User Timed Out', `<@${message.author.id}> was automatically timed out.`, timeoutLogFields, 'Orange');
-                } catch (e) {
-                    console.error('Failed to timeout member', e);
-                }
-            }
+            // --- REMOVED: 3-VIOLATION AUTO-TIMEOUT LOGIC ---
 
             try { await message.delete().catch(() => {}); } catch (e) {}
             return;
@@ -239,7 +212,7 @@ client.on('messageCreate', async (message) => {
 });
 
 // --- Audit log monitor
-async function handleAuditAction(actionType, entity, userThatGotAffected) { // Added userThatGotAffected parameter
+async function handleAuditAction(actionType, entity, userThatGotAffected) {
     try {
         const guild = entity.guild;
         const logs = await guild.fetchAuditLogs({ limit: 5, type: actionType });
@@ -250,36 +223,45 @@ async function handleAuditAction(actionType, entity, userThatGotAffected) { // A
         const member = await guild.members.fetch(executor.id).catch(() => null);
         if (!member) return;
         if (executor.id === client.user.id) return;
+        
+        // Check if the executor is ignored or whitelisted
         if (isIgnored(member) || isWhitelisted(guild.id, member)) return;
         
-        // --- DM for external Ban (if the bot didn't issue it)
+        // --- ACTION FOR NON-WHITELISTED/NON-IGNORED USERS (Violation instead of Kick) ---
+        
+        const targetName = entity.name || (userThatGotAffected ? userThatGotAffected.tag : entity.id);
+        const reason = `Unauthorized Audit Action: ${actionType} on ${targetName}`;
+
+        // 1. Add Violation
+        const violation = addViolation(guild.id, executor.id, {
+            type: 'SECURITY',
+            reason: reason,
+            moderatorId: client.user.id,
+            channelId: LOG_CHANNEL_ID // Log channel as the channel context
+        });
+
+        // 2. DM the executor
+        await sendAppealDM(executor, 'Violation', reason);
+
+        // 3. Log the event (updated fields)
+        const logFields = [
+            { name: 'Executor', value: `<@${executor.id}>` },
+            { name: 'Action', value: actionType },
+            { name: 'Target', value: targetName },
+            { name: 'Violation ID', value: violation.id },
+            { name: 'Time', value: new Date().toLocaleString() }
+        ];
+        await logEmbed(guild, 'Unauthorized Action - Violation Issued', `A non-whitelisted user performed a restricted action. **No kick was performed.**`, logFields, 'Orange');
+        
+        // --- REMOVED: The code that performs member.kick() is gone ---
+
+        // Handle the case where the ban was performed by a non-whitelisted user
         if (actionType === 'MemberBan' && userThatGotAffected) {
+            // Note: If the bot issued the ban, it would have been caught by (executor.id === client.user.id)
+            // This case handles a *manual* ban by a non-whitelisted user.
             await sendAppealDM(userThatGotAffected, 'Banned', 'Banned by a moderator', true);
         }
-
-        const targetName = entity.name || (userThatGotAffected ? userThatGotAffected.tag : entity.id);
-
-        try {
-            await member.kick(`Unauthorized ${actionType} detected`);
-            const logFields = [
-                { name: 'Executor', value: `<@${executor.id}>` },
-                { name: 'Action', value: actionType },
-                { name: 'Target', value: targetName },
-                { name: 'Channel', value: 'Audit Log' },
-                { name: 'Time', value: new Date().toLocaleString() }
-            ];
-            await logEmbed(guild, 'Unauthorized Action - User Kicked', `An unauthorized administrative action was detected and the executor was kicked.`, logFields, 'Red');
-        } catch (e) {
-            console.error('Failed to kick executor', e);
-            const logFields = [
-                { name: 'Executor', value: `<@${executor.id}>` },
-                { name: 'Action', value: actionType },
-                { name: 'Target', value: targetName },
-                { name: 'Error', value: e.message },
-                { name: 'Time', value: new Date().toLocaleString() }
-            ];
-            await logEmbed(guild, 'Unauthorized Action - Failed to Kick', `An unauthorized action was detected, but the bot failed to kick the executor.`, logFields, 'Red');
-        }
+        
     } catch (err) {
         console.error('handleAuditAction error', err);
     }
@@ -291,13 +273,12 @@ client.on('roleCreate', async role => handleAuditAction('RoleCreate', role));
 client.on('roleDelete', async role => handleAuditAction('RoleDelete', role));
 client.on('guildBanAdd', async ban => handleAuditAction('MemberBan', ban.user, ban.user));
 
-// --- Slash commands (Updated with new commands)
+// --- Slash commands
 const commands = [
     new SlashCommandBuilder()
         .setName('ping')
         .setDescription('Check bot latency'),
     
-    // NEW COMMAND: WARN
     new SlashCommandBuilder()
         .setName('warn')
         .setDescription('Issue a formal warning to a user (no violation tracking)')
@@ -305,7 +286,6 @@ const commands = [
         .addUserOption(opt => opt.setName('user').setDescription('User to warn').setRequired(true))
         .addStringOption(opt => opt.setName('reason').setDescription('Reason for the warning').setRequired(true)),
     
-    // NEW COMMAND: KICK
     new SlashCommandBuilder()
         .setName('kick')
         .setDescription('Kick a user from the guild')
@@ -313,7 +293,6 @@ const commands = [
         .addUserOption(opt => opt.setName('user').setDescription('User to kick').setRequired(true))
         .addStringOption(opt => opt.setName('reason').setDescription('Reason for the kick').setRequired(true)),
     
-    // NEW COMMAND: BAN
     new SlashCommandBuilder()
         .setName('ban')
         .setDescription('Ban a user from the guild')
@@ -382,19 +361,24 @@ async function registerCommands() {
 client.on('ready', async () => {
     console.log(`Logged in as ${client.user.tag}`);
     client.user.setPresence({
-        activities: [{ name: 'with my ban hammer', type: 0 }], // Changed type from 3 to 0
+        activities: [{ name: 'with my ban hammer', type: 0 }],
         status: 'online'
     });
     await registerCommands();
 });
 
-// --- Slash command handler (UPDATED: All replies are now embeds in the channel)
+// --- Slash command handler
 client.on('interactionCreate', async interaction => {
     if (!interaction.isChatInputCommand()) return;
     const { commandName } = interaction;
 
-    // Acknowledge the interaction publicly to prevent the "This interaction failed" message
-    await interaction.deferReply({ ephemeral: false });
+    // Acknowledge the interaction PUBLICLY to prevent the "Unknown interaction" error
+    try {
+        await interaction.deferReply({ ephemeral: false });
+    } catch (e) {
+        console.error(`Failed to defer interaction for command ${commandName}:`, e);
+        return;
+    }
 
     // --- Ping
     if (commandName === 'ping') {
@@ -406,12 +390,11 @@ client.on('interactionCreate', async interaction => {
         await interaction.editReply({ embeds: [embed] });
     }
 
-    // --- Warn (New Handler)
+    // --- Warn
     else if (commandName === 'warn') {
         const target = interaction.options.getUser('user', true);
         const reason = interaction.options.getString('reason', true);
 
-        // --- DM the warned user
         await sendAppealDM(target, 'Warned', reason);
 
         const embed = new EmbedBuilder()
@@ -427,7 +410,6 @@ client.on('interactionCreate', async interaction => {
 
         await interaction.editReply({ embeds: [embed] });
 
-        // --- Log function call
         const logFields = [
             { name: 'Action', value: 'Warning', inline: true },
             { name: 'Moderator', value: `<@${interaction.user.id}>`, inline: true },
@@ -437,7 +419,7 @@ client.on('interactionCreate', async interaction => {
         await logEmbed(interaction.guild, 'User Warned', `A moderator issued a formal warning.`, logFields, 'Yellow');
     }
 
-    // --- Kick (New Handler)
+    // --- Kick
     else if (commandName === 'kick') {
         const target = interaction.options.getUser('user', true);
         const reason = interaction.options.getString('reason', true);
@@ -448,9 +430,7 @@ client.on('interactionCreate', async interaction => {
         }
 
         try {
-            // --- DM the kicked user before kicking
             await sendAppealDM(target, 'Kicked', reason);
-
             await member.kick(reason);
 
             const embed = new EmbedBuilder()
@@ -465,7 +445,6 @@ client.on('interactionCreate', async interaction => {
                 .setTimestamp();
             await interaction.editReply({ embeds: [embed] });
 
-            // --- Log function call
             const logFields = [
                 { name: 'Action', value: 'Kick', inline: true },
                 { name: 'Moderator', value: `<@${interaction.user.id}>`, inline: true },
@@ -480,19 +459,18 @@ client.on('interactionCreate', async interaction => {
         }
     }
 
-    // --- Ban (New Handler)
+    // --- Ban
     else if (commandName === 'ban') {
         const target = interaction.options.getUser('user', true);
         const reason = interaction.options.getString('reason', true);
-        const deleteMessagesDays = interaction.options.getInteger('deletemessages') || 0; // Default to 0 days
+        const deleteMessagesDays = interaction.options.getInteger('deletemessages') || 0;
 
         try {
-            // --- DM the banned user before banning
             await sendAppealDM(target, 'Banned', reason, true);
 
             await interaction.guild.bans.create(target.id, {
                 reason: reason,
-                deleteMessageSeconds: deleteMessagesDays * 24 * 60 * 60, // Convert days to seconds
+                deleteMessageSeconds: deleteMessagesDays * 24 * 60 * 60,
             });
 
             const embed = new EmbedBuilder()
@@ -508,7 +486,6 @@ client.on('interactionCreate', async interaction => {
                 .setTimestamp();
             await interaction.editReply({ embeds: [embed] });
 
-            // --- Log function call
             const logFields = [
                 { name: 'Action', value: 'Ban', inline: true },
                 { name: 'Moderator', value: `<@${interaction.user.id}>`, inline: true },
@@ -541,7 +518,6 @@ client.on('interactionCreate', async interaction => {
             type, reason, moderatorId: interaction.user.id, channelId: interaction.channelId
         });
         
-        // --- DM the user for manual violation
         await sendAppealDM(target, 'Violation', reason);
 
         const embed = new EmbedBuilder()
@@ -561,7 +537,6 @@ client.on('interactionCreate', async interaction => {
 
         await interaction.editReply({ embeds: [embed] });
 
-        // UPDATED: Log function call with more details
         const logFields = [
             { name: 'Action', value: 'Manual Violation Creation', inline: true },
             { name: 'Moderator', value: `<@${interaction.user.id}>`, inline: true },
@@ -572,33 +547,7 @@ client.on('interactionCreate', async interaction => {
         ];
         await logEmbed(interaction.guild, 'Violation Created by Moderator', `A moderator manually added a violation to a user.`, logFields, 'Orange');
 
-        const userViolations = getViolations(interaction.guild.id, target.id);
-        if (userViolations.length >= 3) {
-            try {
-                const member = await interaction.guild.members.fetch(target.id);
-                await member.timeout(30 * 60 * 1000, 'Reached 3 violations');
-                const embed2 = new EmbedBuilder()
-                    .setTitle('User Timed Out')
-                    .setDescription(`<@${target.id}> timed out for 30 minutes due to 3 violations.`)
-                    .addFields(
-                        { name: 'User', value: `<@${target.id}>` },
-                        { name: 'Moderator', value: `<@${interaction.user.id}>` },
-                        { name: 'Channel', value: `${interaction.channel}` },
-                        { name: 'Time', value: new Date().toLocaleString() }
-                    )
-                    .setColor('Red')
-                    .setTimestamp();
-                await interaction.followUp({ embeds: [embed2] });
-
-                // UPDATED: Log function call
-                const timeoutLogFields = [
-                    { name: 'User', value: `<@${target.id}>`, inline: true },
-                    { name: 'Moderator', value: `<@${interaction.user.id}>`, inline: true },
-                    { name: 'Reason', value: 'Reached 3 violations' }
-                ];
-                await logEmbed(interaction.guild, 'User Timed Out', `<@${target.id}> was automatically timed out by a moderator's command.`, timeoutLogFields, 'Red');
-            } catch(e) { console.error('Failed to timeout user', e); }
-        }
+        // --- REMOVED: 3-VIOLATION AUTO-TIMEOUT LOGIC ---
     }
 
     // --- Remove Violation
@@ -627,7 +576,6 @@ client.on('interactionCreate', async interaction => {
             .setTimestamp();
         await interaction.editReply({ embeds: [embed] });
 
-        // UPDATED: Log function call
         const logFields = [
             { name: 'Action', value: 'Violation Removal', inline: true },
             { name: 'Moderator', value: `<@${interaction.user.id}>`, inline: true },
@@ -680,6 +628,7 @@ client.on('interactionCreate', async interaction => {
             if (userOpt) {
                 if (!data.whitelist.users.includes(userOpt.id)) {
                     data.whitelist.users.push(userOpt.id);
+                    saveData(data);
                 }
                 embed = new EmbedBuilder().setTitle('Whitelist Add').setDescription(`User <@${userOpt.id}> added to whitelist`).setColor('Green');
                 logTitle = 'Whitelist Addition';
@@ -693,66 +642,72 @@ client.on('interactionCreate', async interaction => {
             } else if (roleOpt) {
                 if (!data.whitelist.roles.includes(roleOpt.id)) {
                     data.whitelist.roles.push(roleOpt.id);
+                    saveData(data);
                 }
-                embed = new EmbedBuilder().setTitle('Whitelist Add').setDescription(`Role <@&${roleOpt.id}> added to whitelist`).setColor('Green');
+                embed = new EmbedBuilder().setTitle('Whitelist Add').setDescription(`Role ${roleOpt.name} added to whitelist`).setColor('Green');
                 logTitle = 'Whitelist Addition';
                 logDescription = `A role was manually whitelisted.`;
                 logColor = 'Green';
                 logFields = [
                     { name: 'Action', value: 'Whitelist Add' },
                     { name: 'Moderator', value: `<@${interaction.user.id}>` },
-                    { name: 'Role Added', value: `<@&${roleOpt.id}>` }
+                    { name: 'Role Added', value: `${roleOpt.name} (\`${roleOpt.id}\`)` }
                 ];
             } else {
-                embed = new EmbedBuilder().setDescription('You must provide a user or a role.').setColor('Red');
+                 embed = new EmbedBuilder().setDescription('Please provide a user or a role to add.').setColor('Red');
             }
         } else if (sub === 'remove') {
             if (userOpt) {
                 const initialLength = data.whitelist.users.length;
-                data.whitelist.users = data.whitelist.users.filter(x => x !== userOpt.id);
-                const removed = initialLength !== data.whitelist.users.length;
-                embed = new EmbedBuilder().setTitle('Whitelist Removal').setDescription(removed ? `User <@${userOpt.id}> removed from whitelist` : `User not found in whitelist`).setColor(removed ? 'Orange' : 'Red');
+                data.whitelist.users = data.whitelist.users.filter(id => id !== userOpt.id);
+                if (data.whitelist.users.length < initialLength) saveData(data);
+                embed = new EmbedBuilder().setTitle('Whitelist Remove').setDescription(`User <@${userOpt.id}> removed from whitelist`).setColor('Yellow');
                 logTitle = 'Whitelist Removal';
                 logDescription = `A user was removed from the whitelist.`;
-                logColor = 'Orange';
+                logColor = 'Yellow';
                 logFields = [
-                    { name: 'Action', value: 'Whitelist Removal' },
+                    { name: 'Action', value: 'Whitelist Remove' },
                     { name: 'Moderator', value: `<@${interaction.user.id}>` },
-                    { name: 'User Removed', value: `<@${userOpt.id}>` },
-                    { name: 'Status', value: removed ? 'Success' : 'Failed' }
+                    { name: 'User Removed', value: `<@${userOpt.id}>` }
                 ];
             } else if (roleOpt) {
                 const initialLength = data.whitelist.roles.length;
-                data.whitelist.roles = data.whitelist.roles.filter(x => x !== roleOpt.id);
-                const removed = initialLength !== data.whitelist.roles.length;
-                embed = new EmbedBuilder().setTitle('Whitelist Removal').setDescription(removed ? `Role <@&${roleOpt.id}> removed from whitelist` : `Role not found in whitelist`).setColor(removed ? 'Orange' : 'Red');
+                data.whitelist.roles = data.whitelist.roles.filter(id => id !== roleOpt.id);
+                if (data.whitelist.roles.length < initialLength) saveData(data);
+                embed = new EmbedBuilder().setTitle('Whitelist Remove').setDescription(`Role ${roleOpt.name} removed from whitelist`).setColor('Yellow');
                 logTitle = 'Whitelist Removal';
                 logDescription = `A role was removed from the whitelist.`;
-                logColor = 'Orange';
+                logColor = 'Yellow';
                 logFields = [
-                    { name: 'Action', value: 'Whitelist Removal' },
+                    { name: 'Action', value: 'Whitelist Remove' },
                     { name: 'Moderator', value: `<@${interaction.user.id}>` },
-                    { name: 'Role Removed', value: `<@&${roleOpt.id}>` },
-                    { name: 'Status', value: removed ? 'Success' : 'Failed' }
+                    { name: 'Role Removed', value: `${roleOpt.name} (\`${roleOpt.id}\`)` }
                 ];
             } else {
-                embed = new EmbedBuilder().setDescription('You must provide a user or a role.').setColor('Red');
+                embed = new EmbedBuilder().setDescription('Please provide a user or a role to remove.').setColor('Red');
             }
         }
 
-        saveData(data);
-        embed.setTimestamp();
-        await interaction.editReply({ embeds: [embed] });
-        if (logFields.length > 0) {
+        if (embed) {
+            await interaction.editReply({ embeds: [embed] });
+        } else {
+             await interaction.editReply({ embeds: [new EmbedBuilder().setDescription('Invalid whitelist action.').setColor('Red')] });
+        }
+
+        if (logTitle) {
             await logEmbed(interaction.guild, logTitle, logDescription, logFields, logColor);
         }
     }
 });
 
-// --- Login
-client.login(TOKEN);
-
-// --- Keep-alive server
+// --- Web Server (for Render health check / uptime)
 const app = express();
-app.get('/', (req, res) => res.send('Bot is alive!'));
-app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
+app.get('/', (req, res) => {
+    res.send('Bot is running!');
+});
+app.listen(PORT, () => {
+    console.log(`Web server listening on port ${PORT}`);
+});
+
+// --- Login
+client.login(TOKEN).catch(err => console.error('Failed to log in:', err));
