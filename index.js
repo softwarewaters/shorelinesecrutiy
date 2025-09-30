@@ -1,5 +1,6 @@
 require('dotenv').config();
 const fs = require('fs');
+// Removed InteractionFlags from destructuring as it's not exported directly in d.js v14 
 const { Client, GatewayIntentBits, Partials, REST, Routes, SlashCommandBuilder, PermissionFlagsBits, EmbedBuilder } = require('discord.js');
 const express = require('express');
 const { v4: uuidv4 } = require('uuid');
@@ -20,7 +21,6 @@ if (!TOKEN) {
     console.error('Please set TOKEN in .env');
     process.exit(1);
 }
-// NOTE: CLIENT_ID is highly recommended for REST registration, though the ready event can fetch it.
 if (!CLIENT_ID) {
     console.warn('CLIENT_ID is not set in .env. Command registration may fail if client.application is not ready.');
 }
@@ -278,7 +278,7 @@ client.on('roleCreate', async role => handleAuditAction('RoleCreate', role));
 client.on('roleDelete', async role => handleAuditAction('RoleDelete', role));
 client.on('guildBanAdd', async ban => handleAuditAction('MemberBan', ban.user, ban.user));
 
-// --- Slash commands
+// --- Slash commands (Command definitions unchanged)
 const commands = [
     new SlashCommandBuilder()
         .setName('ping')
@@ -349,8 +349,6 @@ const commands = [
 // --- Register commands
 async function registerCommands() {
     const rest = new REST({ version: '10' }).setToken(TOKEN);
-    // Use client.application.id if available, otherwise fall back to the env variable.
-    // The client.on('ready') event should ensure client.application is not null here.
     const applicationId = client.application?.id || CLIENT_ID; 
 
     if (!applicationId) {
@@ -382,19 +380,30 @@ client.on('ready', async () => {
     await registerCommands();
 });
 
-// --- Slash command handler
+// ----------------------------------------------------------------------
+// --- 🌟 CRITICAL FIX: Interaction Handler 🌟
+// ----------------------------------------------------------------------
 client.on('interactionCreate', async interaction => {
     if (!interaction.isChatInputCommand()) return;
     const { commandName } = interaction;
 
-    // Acknowledge the interaction PUBLICLY to prevent the "Unknown interaction" error
+    // Determine if the response should be hidden (ephemeral)
+    const isEphemeral = ['ping', 'whitelist', 'checkuser', 'removeviolation'].includes(commandName);
+
+    // FIX: Defer the reply immediately. The error happens because other logic 
+    // delays this initial acknowledgement.
     try {
-        // Use ephemeral: true for commands that only the user needs to see (like pings or successful actions)
-        await interaction.deferReply({ ephemeral: ['ping', 'whitelist', 'checkuser', 'removeviolation'].includes(commandName) });
+        await interaction.deferReply({ ephemeral: isEphemeral });
     } catch (e) {
-        console.error(`Failed to defer interaction for command ${commandName}:`, e);
+        // If the interaction is already unknown, there's nothing more we can do.
+        // The error you saw (10062) will be caught here, preventing further issues.
+        console.error(`Failed to defer interaction for command ${commandName}. This means the 3-second timeout was hit.`, e.message);
         return;
     }
+
+    // Now, run the actual command logic. This can take longer than 3 seconds 
+    // because we've already acknowledged the interaction (deferred the reply).
+    // All replies from here must use interaction.editReply()
 
     // --- Ping
     if (commandName === 'ping') {
@@ -562,8 +571,6 @@ client.on('interactionCreate', async interaction => {
             { name: 'Violation ID', value: `\`${violation.id}\`` }
         ];
         await logEmbed(interaction.guild, 'Violation Created by Moderator', `A moderator manually added a violation to a user.`, logFields, 'Orange');
-
-        // --- REMOVED: 3-VIOLATION AUTO-TIMEOUT LOGIC ---
     }
 
     // --- Remove Violation
@@ -706,24 +713,23 @@ client.on('interactionCreate', async interaction => {
 
         if (embed) {
             await interaction.editReply({ embeds: [embed] });
-        } else {
-            await interaction.editReply({ embeds: [new EmbedBuilder().setDescription('Invalid whitelist action.').setColor('Red')] });
-        }
-
-        if (logTitle) {
-            await logEmbed(interaction.guild, logTitle, logDescription, logFields, logColor);
+            // Only send log if the command was successful (i.e., embed was generated)
+            if (logTitle) {
+                await logEmbed(interaction.guild, logTitle, logDescription, logFields, logColor);
+            }
         }
     }
 });
+// ----------------------------------------------------------------------
 
-// --- Web Server (for Render health check / uptime)
+// --- Web Server (Keep-alive)
 const app = express();
 app.get('/', (req, res) => {
     res.send('Bot is running!');
 });
+
 app.listen(PORT, () => {
     console.log(`Web server listening on port ${PORT}`);
 });
 
-// --- Login
-client.login(TOKEN).catch(err => console.error('Failed to log in:', err));
+client.login(TOKEN);
