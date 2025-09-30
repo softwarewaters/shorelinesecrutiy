@@ -11,6 +11,10 @@ const IGNORED_ROLES = (process.env.IGNORED_ROLES || '').split(',').map(s => s.tr
 const GUILD_ID = process.env.GUILD_ID || null;
 const PORT = process.env.PORT || 3000;
 
+// --- Appeal Links (New Constants)
+const APPEAL_CHANNEL_LINK = 'https://discord.com/channels/1394343761030676603/1395021234885890160';
+const BAN_APPEAL_URL = 'https://shorelineinteractive.netlify.app/banappeal';
+
 if (!TOKEN) {
     console.error('Please set TOKEN in .env');
     process.exit(1);
@@ -90,6 +94,38 @@ async function logEmbed(guild, actionTitle, actionDescription, fields, color) {
     }
 }
 
+// --- Appeal DM Function (New Function)
+async function sendAppealDM(user, action, reason, isBan = false) {
+    try {
+        const embed = new EmbedBuilder()
+            .setTitle(`🚨 Moderation Action: You were ${action}!`)
+            .setDescription(`A moderation action has been taken against you in the server.`)
+            .addFields(
+                { name: 'Action', value: action.toUpperCase(), inline: true },
+                { name: 'Reason', value: reason || 'No specific reason provided.' }
+            )
+            .setColor(isBan ? 'DarkRed' : 'Orange')
+            .setFooter({ text: 'This is an automated notification from the server security bot.' })
+            .setTimestamp();
+
+        if (isBan) {
+            embed.addFields(
+                { name: 'Ban Appeal', value: `If you wish to appeal your ban, please use this dedicated form: [Ban Appeal Form](${BAN_APPEAL_URL})` }
+            );
+        } else {
+            embed.addFields(
+                { name: 'Appeal a Warning, Violation, or Kick', value: `You can attempt to appeal this action in the designated appeal channel. **Note:** This link only works if you are still in the server.` },
+                { name: 'Appeal Link', value: `[Go to Appeal Channel](${APPEAL_CHANNEL_LINK})` }
+            );
+        }
+
+        await user.send({ embeds: [embed] });
+    } catch (e) {
+        console.warn(`Failed to send appeal DM to ${user.tag} (${user.id}) for ${action}:`, e.message);
+    }
+}
+
+
 // --- Violations
 function addViolation(guildId, userId, { type, reason, moderatorId, channelId }) {
     if (!data.violations.byGuild[guildId]) data.violations.byGuild[guildId] = {};
@@ -129,12 +165,16 @@ client.on('messageCreate', async (message) => {
     const content = (message.content || '').toLowerCase();
     for (const w of offensiveWords) {
         if (content.includes(w)) {
+            const reason = `Use of banned word: ${w}`;
             const violation = addViolation(message.guild.id, message.author.id, {
                 type: 'HATE_SPEECH',
-                reason: `Use of banned word: ${w}`,
+                reason: reason,
                 moderatorId: client.user.id,
                 channelId: message.channel.id
             });
+            
+            // --- DM for auto-violation
+            await sendAppealDM(message.author, 'Violation', reason);
 
             const embed = new EmbedBuilder()
                 .setTitle('🚨 Security Violation — HATE_SPEECH')
@@ -211,6 +251,11 @@ async function handleAuditAction(actionType, entity, userThatGotAffected) { // A
         if (!member) return;
         if (executor.id === client.user.id) return;
         if (isIgnored(member) || isWhitelisted(guild.id, member)) return;
+        
+        // --- DM for external Ban (if the bot didn't issue it)
+        if (actionType === 'MemberBan' && userThatGotAffected) {
+            await sendAppealDM(userThatGotAffected, 'Banned', 'Banned by a moderator', true);
+        }
 
         const targetName = entity.name || (userThatGotAffected ? userThatGotAffected.tag : entity.id);
 
@@ -246,14 +291,41 @@ client.on('roleCreate', async role => handleAuditAction('RoleCreate', role));
 client.on('roleDelete', async role => handleAuditAction('RoleDelete', role));
 client.on('guildBanAdd', async ban => handleAuditAction('MemberBan', ban.user, ban.user));
 
-// --- Slash commands
+// --- Slash commands (Updated with new commands)
 const commands = [
     new SlashCommandBuilder()
         .setName('ping')
         .setDescription('Check bot latency'),
+    
+    // NEW COMMAND: WARN
+    new SlashCommandBuilder()
+        .setName('warn')
+        .setDescription('Issue a formal warning to a user (no violation tracking)')
+        .setDefaultMemberPermissions(PermissionFlagsBits.ModerateMembers)
+        .addUserOption(opt => opt.setName('user').setDescription('User to warn').setRequired(true))
+        .addStringOption(opt => opt.setName('reason').setDescription('Reason for the warning').setRequired(true)),
+    
+    // NEW COMMAND: KICK
+    new SlashCommandBuilder()
+        .setName('kick')
+        .setDescription('Kick a user from the guild')
+        .setDefaultMemberPermissions(PermissionFlagsBits.KickMembers)
+        .addUserOption(opt => opt.setName('user').setDescription('User to kick').setRequired(true))
+        .addStringOption(opt => opt.setName('reason').setDescription('Reason for the kick').setRequired(true)),
+    
+    // NEW COMMAND: BAN
+    new SlashCommandBuilder()
+        .setName('ban')
+        .setDescription('Ban a user from the guild')
+        .setDefaultMemberPermissions(PermissionFlagsBits.BanMembers)
+        .addUserOption(opt => opt.setName('user').setDescription('User to ban').setRequired(true))
+        .addStringOption(opt => opt.setName('reason').setDescription('Reason for the ban').setRequired(true))
+        .addIntegerOption(opt => opt.setName('deletemessages').setDescription('Days of messages to delete (0-7)').setRequired(false)),
+    
     new SlashCommandBuilder()
         .setName('createviolation')
         .setDescription('Create a violation for a user')
+        .setDefaultMemberPermissions(PermissionFlagsBits.ModerateMembers)
         .addUserOption(opt => opt.setName('user').setDescription('User to mark').setRequired(true))
         .addStringOption(opt => opt.setName('type').setDescription('Violation type').setRequired(true)
             .addChoices(
@@ -264,15 +336,20 @@ const commands = [
                 { name: 'EMOJI_SPAM', value: 'EMOJI_SPAM' }
             ))
         .addStringOption(opt => opt.setName('reason').setDescription('Reason or notes').setRequired(false)),
+    
     new SlashCommandBuilder()
         .setName('removeviolation')
         .setDescription('Remove a violation by ID')
+        .setDefaultMemberPermissions(PermissionFlagsBits.ModerateMembers)
         .addUserOption(opt => opt.setName('user').setDescription('User').setRequired(true))
         .addStringOption(opt => opt.setName('violationid').setDescription('Violation ID').setRequired(true)),
+    
     new SlashCommandBuilder()
         .setName('checkuser')
         .setDescription('Display all violations for a user')
+        .setDefaultMemberPermissions(PermissionFlagsBits.ModerateMembers)
         .addUserOption(opt => opt.setName('user').setDescription('User to check').setRequired(true)),
+    
     new SlashCommandBuilder()
         .setName('whitelist')
         .setDescription('Manage whitelist (users & roles)')
@@ -305,7 +382,7 @@ async function registerCommands() {
 client.on('ready', async () => {
     console.log(`Logged in as ${client.user.tag}`);
     client.user.setPresence({
-        activities: [{ name: 'Shoreline Security', type: 3 }],
+        activities: [{ name: 'with my ban hammer', type: 0 }], // Changed type from 3 to 0
         status: 'online'
     });
     await registerCommands();
@@ -329,6 +406,123 @@ client.on('interactionCreate', async interaction => {
         await interaction.editReply({ embeds: [embed] });
     }
 
+    // --- Warn (New Handler)
+    else if (commandName === 'warn') {
+        const target = interaction.options.getUser('user', true);
+        const reason = interaction.options.getString('reason', true);
+
+        // --- DM the warned user
+        await sendAppealDM(target, 'Warned', reason);
+
+        const embed = new EmbedBuilder()
+            .setTitle('User Warned')
+            .setDescription(`<@${target.id}> has received a warning.`)
+            .addFields(
+                { name: 'User', value: `<@${target.id}>`, inline: true },
+                { name: 'Moderator', value: `<@${interaction.user.id}>`, inline: true },
+                { name: 'Reason', value: reason }
+            )
+            .setColor('Yellow')
+            .setTimestamp();
+
+        await interaction.editReply({ embeds: [embed] });
+
+        // --- Log function call
+        const logFields = [
+            { name: 'Action', value: 'Warning', inline: true },
+            { name: 'Moderator', value: `<@${interaction.user.id}>`, inline: true },
+            { name: 'Target User', value: `<@${target.id}>`, inline: true },
+            { name: 'Reason', value: reason }
+        ];
+        await logEmbed(interaction.guild, 'User Warned', `A moderator issued a formal warning.`, logFields, 'Yellow');
+    }
+
+    // --- Kick (New Handler)
+    else if (commandName === 'kick') {
+        const target = interaction.options.getUser('user', true);
+        const reason = interaction.options.getString('reason', true);
+        const member = await interaction.guild.members.fetch(target.id).catch(() => null);
+
+        if (!member) {
+            return interaction.editReply({ embeds: [new EmbedBuilder().setDescription('User not found in guild.').setColor('Red')] });
+        }
+
+        try {
+            // --- DM the kicked user before kicking
+            await sendAppealDM(target, 'Kicked', reason);
+
+            await member.kick(reason);
+
+            const embed = new EmbedBuilder()
+                .setTitle('User Kicked')
+                .setDescription(`<@${target.id}> was successfully kicked.`)
+                .addFields(
+                    { name: 'User', value: `<@${target.id}>`, inline: true },
+                    { name: 'Moderator', value: `<@${interaction.user.id}>`, inline: true },
+                    { name: 'Reason', value: reason }
+                )
+                .setColor('Orange')
+                .setTimestamp();
+            await interaction.editReply({ embeds: [embed] });
+
+            // --- Log function call
+            const logFields = [
+                { name: 'Action', value: 'Kick', inline: true },
+                { name: 'Moderator', value: `<@${interaction.user.id}>`, inline: true },
+                { name: 'Target User', value: `<@${target.id}>`, inline: true },
+                { name: 'Reason', value: reason }
+            ];
+            await logEmbed(interaction.guild, 'User Kicked', `A user was removed from the guild.`, logFields, 'Orange');
+
+        } catch (e) {
+            console.error('Failed to kick user:', e);
+            await interaction.editReply({ embeds: [new EmbedBuilder().setDescription(`Failed to kick <@${target.id}>. Error: ${e.message}`).setColor('Red')] });
+        }
+    }
+
+    // --- Ban (New Handler)
+    else if (commandName === 'ban') {
+        const target = interaction.options.getUser('user', true);
+        const reason = interaction.options.getString('reason', true);
+        const deleteMessagesDays = interaction.options.getInteger('deletemessages') || 0; // Default to 0 days
+
+        try {
+            // --- DM the banned user before banning
+            await sendAppealDM(target, 'Banned', reason, true);
+
+            await interaction.guild.bans.create(target.id, {
+                reason: reason,
+                deleteMessageSeconds: deleteMessagesDays * 24 * 60 * 60, // Convert days to seconds
+            });
+
+            const embed = new EmbedBuilder()
+                .setTitle('User Banned')
+                .setDescription(`<@${target.id}> was permanently banned.`)
+                .addFields(
+                    { name: 'User', value: `<@${target.id}>`, inline: true },
+                    { name: 'Moderator', value: `<@${interaction.user.id}>`, inline: true },
+                    { name: 'Reason', value: reason },
+                    { name: 'Messages Deleted (Days)', value: deleteMessagesDays.toString() }
+                )
+                .setColor('DarkRed')
+                .setTimestamp();
+            await interaction.editReply({ embeds: [embed] });
+
+            // --- Log function call
+            const logFields = [
+                { name: 'Action', value: 'Ban', inline: true },
+                { name: 'Moderator', value: `<@${interaction.user.id}>`, inline: true },
+                { name: 'Target User', value: `<@${target.id}>`, inline: true },
+                { name: 'Reason', value: reason }
+            ];
+            await logEmbed(interaction.guild, 'User Banned', `A user was permanently banned from the guild.`, logFields, 'DarkRed');
+
+        } catch (e) {
+            console.error('Failed to ban user:', e);
+            await interaction.editReply({ embeds: [new EmbedBuilder().setDescription(`Failed to ban <@${target.id}>. Error: ${e.message}`).setColor('Red')] });
+        }
+    }
+
     // --- Create Violation
     else if (commandName === 'createviolation') {
         if (!interaction.member.permissions.has(PermissionFlagsBits.ModerateMembers)) {
@@ -346,6 +540,9 @@ client.on('interactionCreate', async interaction => {
         const violation = addViolation(interaction.guild.id, target.id, {
             type, reason, moderatorId: interaction.user.id, channelId: interaction.channelId
         });
+        
+        // --- DM the user for manual violation
+        await sendAppealDM(target, 'Violation', reason);
 
         const embed = new EmbedBuilder()
             .setTitle('Violation Created')
@@ -442,34 +639,33 @@ client.on('interactionCreate', async interaction => {
     }
 
     // --- Check User
-else if (commandName === 'checkuser') {
-    const target = interaction.options.getUser('user', true);
-    const viols = getViolations(interaction.guild.id, target.id);
-    if (viols.length === 0) {
+    else if (commandName === 'checkuser') {
+        const target = interaction.options.getUser('user', true);
+        const viols = getViolations(interaction.guild.id, target.id);
+        if (viols.length === 0) {
+            const embed = new EmbedBuilder()
+                .setTitle('User Violations')
+                .setDescription(`<@${target.id}> has no violations.`)
+                .setColor('Green')
+                .setTimestamp();
+            return await interaction.editReply({ embeds: [embed] });
+        }
+
         const embed = new EmbedBuilder()
-            .setTitle('User Violations')
-            .setDescription(`<@${target.id}> has no violations.`)
-            .setColor('Green')
+            .setTitle(`Violations for ${target.tag}`)
+            .setDescription(`Found **${viols.length}** violations.`)
+            .setColor('Orange')
             .setTimestamp();
-        return await interaction.editReply({ embeds: [embed] });
-    }
 
-    const embed = new EmbedBuilder()
-        .setTitle(`Violations for ${target.tag}`)
-        .setDescription(`Found **${viols.length}** violations.`)
-        .setColor('Orange')
-        .setTimestamp();
-
-    viols.slice(0, 10).forEach((v, index) => {
-        embed.addFields({
-            name: `Violation ${index + 1}: ${v.type} — \`${v.id.substring(0, 8)}\``,
-            value: `**Reason:** ${v.reason}\n**Time:** <t:${Math.floor(new Date(v.timestamp).getTime() / 1000)}:F>`
+        viols.slice(0, 10).forEach((v, index) => {
+            embed.addFields({
+                name: `Violation ${index + 1}: ${v.type} — \`${v.id.substring(0, 8)}\``,
+                value: `**Reason:** ${v.reason}\n**Moderator:** <@${v.moderatorId}>\n**Channel:** <#${v.channelId}>\n**Time:** <t:${Math.floor(new Date(v.timestamp).getTime() / 1000)}:F>`
+            });
         });
-    });
 
-    await interaction.editReply({ embeds: [embed] });
-}
-
+        await interaction.editReply({ embeds: [embed] });
+    }
 
     // --- Whitelist
     else if (commandName === 'whitelist') {
