@@ -262,8 +262,20 @@ client.on('interactionCreate', async i=>{
     // All successful commands will reply ephemeral first, then send the public embed.
 
     if(c==='ping'){ 
-        // Ping is simple, can just be an ephemeral reply
-        return i.reply({ embeds:[new EmbedBuilder().setTitle('🏓 Pong!').setDescription(`Latency: ${client.ws.ping}ms`).setColor('Green').setTimestamp()], ephemeral: true }); 
+        // 👇👇👇 MODIFIED SECTION STARTS HERE 👇👇👇
+        
+        // 1. Create the public Embed
+        const pingEmbed = new EmbedBuilder()
+            .setTitle('🏓 Pong!')
+            .setDescription(`Latency: ${client.ws.ping}ms`)
+            .setColor('Green')
+            .setTimestamp();
+        
+        // 2. Use i.reply() to send the public, non-ephemeral message with the embed.
+        // We do NOT include { ephemeral: true }
+        return i.reply({ embeds: [pingEmbed] });
+        
+        // 👆👆👆 MODIFIED SECTION ENDS HERE 👆👆👆
     }
     
     // --- /ban handler ---
